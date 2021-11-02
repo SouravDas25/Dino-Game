@@ -12,6 +12,7 @@ import cv2  # opencv
 import keras
 import numpy as np
 import pandas as pd
+import tensorflow as tf
 from IPython.display import clear_output
 from PIL import Image
 from flask import Flask, request
@@ -180,8 +181,8 @@ FINAL_EPSILON = 0.0001  # final value of epsilon
 INITIAL_EPSILON = 0.1  # starting value of epsilon
 REPLAY_MEMORY = 10000  # number of previous transitions to remember
 BATCH = 1000  # size of minibatch
-FRAME_PER_ACTION = 32
-LEARNING_RATE = 1e-4
+FRAME_PER_ACTION = 100000
+LEARNING_RATE = 0.001
 img_rows, img_cols = 80, 80
 img_channels = 1  # We stack 4 frames
 executor = ThreadPoolExecutor(max_workers=10)
@@ -208,22 +209,21 @@ def buildmodel():
         Conv2D(32, (8, 8), padding='same', strides=(4, 4), input_shape=(img_cols, img_rows, 1)))  # 80*80*1
     model.add(MaxPooling2D(pool_size=(2, 2)))
     model.add(Activation('relu'))
-    model.add(Conv2D(64, (4, 4), strides=(2, 2), padding='same'))
-    model.add(MaxPooling2D(pool_size=(2, 2)))
-    model.add(Activation('relu'))
-    model.add(Conv2D(64, (3, 3), strides=(1, 1), padding='same'))
-    model.add(MaxPooling2D(pool_size=(2, 2)))
-    model.add(Activation('relu'))
+    # model.add(Conv2D(64, (4, 4), strides=(2, 2), padding='same'))
+    # model.add(MaxPooling2D(pool_size=(2, 2)))
+    # model.add(Activation('relu'))
+    # model.add(Conv2D(64, (3, 3), strides=(1, 1), padding='same'))
+    # model.add(MaxPooling2D(pool_size=(2, 2)))
+    # model.add(Activation('relu'))
     model.add(Flatten())
-    model.add(Dense(2048, activation="relu"))
-    model.add(Dense(1024, activation="relu"))
-    model.add(Dense(512, activation="relu"))
+    model.add(Dense(128, activation="relu"))
+    model.add(Dense(64, activation="relu"))
+    model.add(Dense(32, activation="relu"))
     model.add(Dense(ACTIONS, activation="softmax"))
 
+    huber = tf.keras.losses.Huber(delta=0.1)
     adam = Adam(learning_rate=LEARNING_RATE)
-    model.compile(loss='sparse_categorical_crossentropy',
-                  optimizer=adam,
-                  metrics=['sparse_categorical_accuracy'])
+    model.compile(loss=huber, optimizer=adam)
 
     if os.path.isfile(weights_file):
         model.build((BATCH, img_rows, img_cols, 1))
@@ -260,7 +260,7 @@ def train_on_batch():
         print("taking index ", last_found_neg_rew, len(D))
 
         inputs = np.zeros((BATCH, img_rows, img_cols, 1))  # 32, 20, 40, 4
-        targets = np.zeros(BATCH)  # 32, 2
+        targets = np.zeros((BATCH, 2))  # 32, 2
 
         # Now we do the experience replay
         for i in range(0, len(minibatch)):
@@ -274,27 +274,26 @@ def train_on_batch():
 
             alt_action = (action_t + 1) % 2
 
-            # targets[i] = model.predict(state_t)  # predicted q values
-            # Q_sa = model.predict(state_t1)  # predict q values for next step
-            #
-            # if is_over:
-            #     targets[i, action_t] = 0
-            #     targets[i, alt_action] = 1  # if terminated, only equals reward
-            # else:
-            #     targets[i, action_t] = reward_t + (1 - reward_t) * np.max(Q_sa)
-            #     targets[i, alt_action] = 1 - targets[i, action_t]
-
             if is_over:
-                targets[i] = alt_action
+                targets[i, action_t] = 0
+                targets[i, alt_action] = 1  # if terminated, only equals reward
             else:
-                targets[i] = action_t
+                # targets[i] = model.predict(state_t)  # predicted q values
+                Q_sa = model.predict(state_t1)  # q values for predict next step
+                targets[i, action_t] = reward_t + (1 - reward_t) * np.max(Q_sa)
+                targets[i, alt_action] = 1 - targets[i, action_t]
 
+            # if is_over:
+            #     targets[i] = alt_action
+            # else:
+            #     targets[i] = action_t
+        print("data preprocessed starting training")
         loss1 = model.train_on_batch(inputs, targets)
-        loss = (loss1[0] + loss) / 2
+        loss = (loss1 + loss) / 2
         loss_df.loc[len(loss_df)] = loss
         q_values_df.loc[len(q_values_df)] = np.max(Q_sa)
         model.save_weights(weights_file, overwrite=True)
-        print("time taken : ", time.time() - timeIt, "loss : ", loss, "delta : ", loss1[0], "accuracy", loss1[1])
+        print("time taken : ", time.time() - timeIt, "loss : ", loss, "delta : ", loss1)
     return loss
 
 
@@ -355,7 +354,7 @@ def trainNetwork(game_state, observe=False):
 
             # run the selected action and observed next state and reward
         x_t1, r_t, is_over = game_state.get_state(a_t)
-        print('fps: {0}'.format(1 / (time.time() - last_time)))  # helpful for measuring frame rate
+        print('fps: {0}'.format(1 / (time.time() - last_time)), r_t)  # helpful for measuring frame rate
         last_time = time.time()
         x_t1 = keras.preprocessing.utils.normalize(x_t1)
         x_t1 = x_t1.reshape(1, img_rows, img_cols, 1)  # 1x80x80x1
@@ -369,6 +368,10 @@ def trainNetwork(game_state, observe=False):
             r_t = r_t + abs(r_t * (current_time / highest_time))
         else:
             last_over_time = time.time()
+            for index in range(len(D) - 4, len(D)):
+                item = list(D[index])
+                item[2] = -1
+                D[index] = tuple(item)
 
         # store the transition in D
         if current_time - 3 > 0:
