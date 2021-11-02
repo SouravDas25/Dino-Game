@@ -1,5 +1,4 @@
 import base64
-import json
 import os
 import pickle
 import random
@@ -15,7 +14,9 @@ import numpy as np
 import pandas as pd
 from IPython.display import clear_output
 from PIL import Image
-from keras.layers.core import Dense, Flatten
+from flask import Flask, request
+from keras.layers import MaxPooling2D, Conv2D
+from keras.layers.core import Dense, Flatten, Activation
 # keras imports
 from keras.models import Sequential
 from selenium import webdriver
@@ -178,7 +179,7 @@ EXPLORE = 100000  # frames over which to anneal epsilon
 FINAL_EPSILON = 0.0001  # final value of epsilon
 INITIAL_EPSILON = 0.1  # starting value of epsilon
 REPLAY_MEMORY = 10000  # number of previous transitions to remember
-BATCH = 64  # size of minibatch
+BATCH = 1000  # size of minibatch
 FRAME_PER_ACTION = 32
 LEARNING_RATE = 1e-4
 img_rows, img_cols = 80, 80
@@ -202,43 +203,44 @@ def init_cache():
 def buildmodel():
     print("Now we build the model")
 
-    if not os.path.isfile(weights_file):
+    model = Sequential()
+    model.add(
+        Conv2D(32, (8, 8), padding='same', strides=(4, 4), input_shape=(img_cols, img_rows, 1)))  # 80*80*1
+    model.add(MaxPooling2D(pool_size=(2, 2)))
+    model.add(Activation('relu'))
+    model.add(Conv2D(64, (4, 4), strides=(2, 2), padding='same'))
+    model.add(MaxPooling2D(pool_size=(2, 2)))
+    model.add(Activation('relu'))
+    model.add(Conv2D(64, (3, 3), strides=(1, 1), padding='same'))
+    model.add(MaxPooling2D(pool_size=(2, 2)))
+    model.add(Activation('relu'))
+    model.add(Flatten())
+    model.add(Dense(2048, activation="relu"))
+    model.add(Dense(1024, activation="relu"))
+    model.add(Dense(512, activation="relu"))
+    model.add(Dense(ACTIONS, activation="softmax"))
 
-        model = Sequential()
-        #     model.add(
-        #         Conv2D(32, (8, 8), padding='same', strides=(4, 4), input_shape=(img_cols, img_rows, 1)))  # 80*80*1
-        #     model.add(MaxPooling2D(pool_size=(2, 2)))
-        #     model.add(Activation('relu'))
-        #     model.add(Conv2D(64, (4, 4), strides=(2, 2), padding='same'))
-        #     model.add(MaxPooling2D(pool_size=(2, 2)))
-        #     model.add(Activation('relu'))
-        #     model.add(Conv2D(64, (3, 3), strides=(1, 1), padding='same'))
-        #     model.add(MaxPooling2D(pool_size=(2, 2)))
-        #     model.add(Activation('relu'))
-        model.add(Flatten())
-        model.add(Dense(2048, activation="relu"))
-        model.add(Dense(1024, activation="relu"))
-        model.add(Dense(512, activation="relu"))
-        model.add(Dense(ACTIONS, activation="softmax"))
+    adam = Adam(learning_rate=LEARNING_RATE)
+    model.compile(loss='sparse_categorical_crossentropy',
+                  optimizer=adam,
+                  metrics=['sparse_categorical_accuracy'])
 
-        adam = Adam(learning_rate=LEARNING_RATE)
-        model.compile(loss='sparse_categorical_crossentropy',
-                      optimizer=adam,
-                      metrics=['sparse_categorical_accuracy'])
-
-        # model.save(weights_file)
-    else:
-        model = keras.models.load_model(weights_file)
-        print("Weight load successfully")
+    if os.path.isfile(weights_file):
+        model.build((BATCH, img_rows, img_cols, 1))
+        model.load_weights(weights_file)
+        print("model loaded successfully")
 
     print("We finish building the model")
     return model
 
 
 def train_on_batch():
-    global loss, Q_sa, model, D
+    global loss, Q_sa, model, D, STOP_LOOP
     last_found_neg_rew = 0
     while True:
+
+        if STOP_LOOP:
+            break
 
         timeIt = time.time()
         # sample a minibatch to train on
@@ -247,14 +249,14 @@ def train_on_batch():
             continue
         minibatch = random.sample(D, int(BATCH / 3))
 
-        last_found_neg_rew = last_found_neg_rew + 1 % len(D)
+        last_found_neg_rew = (last_found_neg_rew + int(BATCH * 0.66)) % len(D)
 
         for i in range(last_found_neg_rew, len(D)):
             reward_t = D[i][2]
             minibatch.append(D[i])
             if len(minibatch) >= BATCH:
-                last_found_neg_rew = i
                 break
+
         print("taking index ", last_found_neg_rew, len(D))
 
         inputs = np.zeros((BATCH, img_rows, img_cols, 1))  # 32, 20, 40, 4
@@ -292,14 +294,12 @@ def train_on_batch():
         loss_df.loc[len(loss_df)] = loss
         q_values_df.loc[len(q_values_df)] = np.max(Q_sa)
         model.save_weights(weights_file, overwrite=True)
-        with open("model.json", "w") as outfile:
-            json.dump(model.to_json(), outfile)
         print("time taken : ", time.time() - timeIt, "loss : ", loss, "delta : ", loss1[0], "accuracy", loss1[1])
     return loss
 
 
 def trainNetwork(game_state, observe=False):
-    global loss, Q_sa, model, D
+    global loss, Q_sa, model, D, STOP_LOOP
     last_time = time.time()
     # store the previous observations in replay memory
 
@@ -330,6 +330,9 @@ def trainNetwork(game_state, observe=False):
     highest_time = 16
 
     while (True):  # endless running
+
+        if STOP_LOOP:
+            break
 
         action_index = 0
         r_t = 0  # reward at 4
@@ -367,8 +370,6 @@ def trainNetwork(game_state, observe=False):
         else:
             last_over_time = time.time()
 
-        print("current time ", current_time, "highest time ", highest_time)
-
         # store the transition in D
         if current_time - 3 > 0:
             D.append((s_t, action_index, r_t, s_t1, is_over))
@@ -405,10 +406,12 @@ def trainNetwork(game_state, observe=False):
         else:
             state = "train"
 
-        time.sleep(0.01)
+        # time.sleep(0.001)
 
-        print("TIMESTEP", t, "/ STATE", state, "/ EPSILON", epsilon, "/ ACTION", action_index, "/ REWARD", r_t,
-              "/ Q_MAX ", np.max(Q_sa), "/ Loss ", loss)
+        if t % 10 == 0:
+            print("current time ", current_time, "highest time ", highest_time)
+            print("TIMESTEP", t, "/ STATE", state, "/ EPSILON", epsilon, "/ ACTION", action_index, "/ REWARD", r_t,
+                  "/ Q_MAX ", np.max(Q_sa), "/ Loss ", loss)
 
     print("Episode finished!")
     print("************************")
@@ -418,6 +421,26 @@ model: Sequential = None
 loss = 0
 Q_sa = 0
 D: deque = None
+STOP_LOOP = False
+
+app = Flask(__name__)
+
+
+def run_server():
+    global app
+    app.run(port=8000)
+
+
+@app.route('/stop')
+def end_loop():
+    global STOP_LOOP
+    STOP_LOOP = True
+    print("Stopping Loops")
+    shutdown_func = request.environ.get('werkzeug.server.shutdown')
+    if shutdown_func is None:
+        raise RuntimeError('Not running werkzeug')
+    shutdown_func()
+    return "Success"
 
 
 # main function
@@ -435,6 +458,8 @@ def playGame(observe=False):
         collector = threading.Thread(target=trainNetwork, args=(game_state, observe))
         threads.append(collector)
         # trainNetwork(model, game_state, loss, D, observe)
+        server = threading.Thread(target=run_server)
+        threads.append(server)
         for thread in threads:
             thread.start()
         for thread in threads:
