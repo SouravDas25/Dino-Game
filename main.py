@@ -7,13 +7,13 @@ import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
-
+from sys import platform as _platform
 import cv2  # opencv
 import keras
 import numpy as np
 import pandas as pd
 import tensorflow as tf
-from IPython.display import clear_output
+# from IPython.display import clear_output
 from PIL import Image
 from flask import Flask, request
 from keras.layers import MaxPooling2D, Conv2D
@@ -24,15 +24,23 @@ from selenium import webdriver
 from selenium.webdriver.common.keys import Keys
 from tensorflow.keras.optimizers import Adam
 
+
+def get_current_path(*args):
+    filepath = os.path.join(*args)
+    path = os.path.join(os.path.dirname('/Users/i353584/Documents/Python/ML/Dino-Game/main.py'), filepath)
+    print("Path : ", path)
+    return path
+
+
 # K.tensorflow_backend._get_available_gpus()
 # path variables
 game_url = "chrome://dino"
-chrome_driver_path = "./chromedriver"
-loss_file_path = "./objects/loss_df.csv"
-actions_file_path = "./objects/actions_df.csv"
-q_value_file_path = "./objects/q_values.csv"
-scores_file_path = "./objects/scores_df.csv"
-weights_file = "E:\Programming\dino-game\model.h5"
+chrome_driver_path = get_current_path('chromedriver')
+loss_file_path = get_current_path('objects', 'loss_df.csv')
+actions_file_path = get_current_path('objects', 'actions_df.csv')
+q_value_file_path = get_current_path('objects', 'q_values.csv')
+scores_file_path = get_current_path('objects', 'scores_df.csv')
+weights_file = get_current_path("model.h5")
 
 # scripts
 # create id for canvas for faster selection from DOM
@@ -129,12 +137,14 @@ class Game_sate:
 
 
 def save_obj(obj, name):
-    with open('objects/' + name + '.pkl', 'wb') as f:  # dump files into objects folder
+    filepath = get_current_path('objects', name + '.pkl')
+    with open(filepath, 'wb+') as f:  # dump files into objects folder
         pickle.dump(obj, f, pickle.HIGHEST_PROTOCOL)
 
 
 def load_obj(name):
-    with open('objects/' + name + '.pkl', 'rb') as f:
+    filepath = get_current_path('objects', name + '.pkl')
+    with open(filepath, 'rb') as f:
         return pickle.load(f)
 
 
@@ -191,13 +201,13 @@ executor = ThreadPoolExecutor(max_workers=10)
 # training variables saved as checkpoints to filesystem to resume training from the same step
 def init_cache():
     """initial variable caching, done only once"""
-    if not os.path.isfile("./objects/epsilon.pkl"):
+    if not os.path.isfile(get_current_path("objects", "epsilon.pkl")):
         save_obj(INITIAL_EPSILON, "epsilon")
     t = 0
-    if not os.path.isfile("./objects/time.pkl"):
+    if not os.path.isfile(get_current_path("objects", "time.pkl")):
         save_obj(t, "time")
     D = deque()
-    if not os.path.isfile("./objects/D.pkl"):
+    if not os.path.isfile(get_current_path("objects", "D.pkl")):
         save_obj(D, "D")
 
 
@@ -354,8 +364,10 @@ def trainNetwork(game_state, observe=False):
 
             # run the selected action and observed next state and reward
         x_t1, r_t, is_over = game_state.get_state(a_t)
-        print('fps: {0}'.format(1 / (time.time() - last_time)), r_t)  # helpful for measuring frame rate
+        fps = int(1 / (time.time() - last_time))
+        print('fps: {0}'.format(fps), r_t)  # helpful for measuring frame rate
         last_time = time.time()
+        x_t1 = x_t1 if int(time.time() % 2) == 0 else cv2.bitwise_not(x_t1)
         x_t1 = keras.preprocessing.utils.normalize(x_t1)
         x_t1 = x_t1.reshape(1, img_rows, img_cols, 1)  # 1x80x80x1
         # s_t1 = np.append(x_t1, s_t[:, :, :, :3], axis=3)  # append the new image to input stack and remove the first one
@@ -368,7 +380,7 @@ def trainNetwork(game_state, observe=False):
             r_t = r_t + abs(r_t * (current_time / highest_time))
         else:
             last_over_time = time.time()
-            for index in range(len(D) - 4, len(D)):
+            for index in range(len(D) - (fps >> 1), len(D)):
                 item = list(D[index])
                 item[2] = -1
                 D[index] = tuple(item)
@@ -394,11 +406,10 @@ def trainNetwork(game_state, observe=False):
             save_obj(D, "D")  # saving episodes
             save_obj(t, "time")  # caching time steps
             save_obj(epsilon, "epsilon")  # cache epsilon to avoid repeated randomness in actions
-            loss_df.to_csv("./objects/loss_df.csv", index=False)
-            scores_df.to_csv("./objects/scores_df.csv", index=False)
-            actions_df.to_csv("./objects/actions_df.csv", index=False)
+            loss_df.to_csv(get_current_path("objects", "loss_df.csv"), index=False)
+            scores_df.to_csv(get_current_path("objects", "scores_df.csv"), index=False)
+            actions_df.to_csv(get_current_path("objects", "actions_df.csv"), index=False)
             q_values_df.to_csv(q_value_file_path, index=False)
-            clear_output()
             game_state._game.resume()
         # print info
         state = ""
@@ -458,13 +469,14 @@ def playGame(observe=False):
         threads = []
         trainer = threading.Thread(target=train_on_batch)
         threads.append(trainer)
-        collector = threading.Thread(target=trainNetwork, args=(game_state, observe))
-        threads.append(collector)
+        # collector = threading.Thread(target=trainNetwork, args=(game_state, observe))
+        # threads.append(collector)
         # trainNetwork(model, game_state, loss, D, observe)
         server = threading.Thread(target=run_server)
         threads.append(server)
         for thread in threads:
             thread.start()
+        trainNetwork(game_state, observe)
         for thread in threads:
             thread.join()
     except StopIteration:
