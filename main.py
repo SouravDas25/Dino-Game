@@ -7,7 +7,7 @@ import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
-from sys import platform as _platform
+from sys import platform as platform
 import cv2  # opencv
 import keras
 import numpy as np
@@ -27,7 +27,7 @@ from tensorflow.keras.optimizers import Adam
 
 def get_current_path(*args):
     filepath = os.path.join(*args)
-    path = os.path.join(os.path.dirname('/Users/i353584/Documents/Python/ML/Dino-Game/main.py'), filepath)
+    path = os.path.join(os.path.dirname('D:\Programming\dino-game\main.py'), filepath)
     print("Path : ", path)
     return path
 
@@ -35,7 +35,13 @@ def get_current_path(*args):
 # K.tensorflow_backend._get_available_gpus()
 # path variables
 game_url = "chrome://dino"
-chrome_driver_path = get_current_path('chromedriver')
+if platform == "linux" or platform == "linux2":
+    chrome_driver_path = get_current_path('chromedriver')
+elif platform == "darwin":
+    chrome_driver_path = get_current_path('chromedriver')
+elif platform == "win32":
+    chrome_driver_path = get_current_path('chromedriver.exe')
+
 loss_file_path = get_current_path('objects', 'loss_df.csv')
 actions_file_path = get_current_path('objects', 'actions_df.csv')
 q_value_file_path = get_current_path('objects', 'q_values.csv')
@@ -367,7 +373,7 @@ def trainNetwork(game_state, observe=False):
         fps = int(1 / (time.time() - last_time))
         print('fps: {0}'.format(fps), r_t)  # helpful for measuring frame rate
         last_time = time.time()
-        x_t1 = x_t1 if int(time.time() % 2) == 0 else cv2.bitwise_not(x_t1)
+        # x_t1 = x_t1 if int(time.time() % 2) == 0 else cv2.bitwise_not(x_t1)
         x_t1 = keras.preprocessing.utils.normalize(x_t1)
         x_t1 = x_t1.reshape(1, img_rows, img_cols, 1)  # 1x80x80x1
         # s_t1 = np.append(x_t1, s_t[:, :, :, :3], axis=3)  # append the new image to input stack and remove the first one
@@ -380,7 +386,7 @@ def trainNetwork(game_state, observe=False):
             r_t = r_t + abs(r_t * (current_time / highest_time))
         else:
             last_over_time = time.time()
-            for index in range(len(D) - (fps >> 1), len(D)):
+            for index in range(len(D) - fps, len(D)):
                 item = list(D[index])
                 item[2] = -1
                 D[index] = tuple(item)
